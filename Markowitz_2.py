@@ -10,7 +10,6 @@ import gurobipy as gp
 import warnings
 import argparse
 from scipy import optimize
-from gurobi_optimods.sharpe_ratio import max_sharpe_ratio
 """
 Project Setup
 """
