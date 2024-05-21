@@ -9,7 +9,8 @@ import quantstats as qs
 import gurobipy as gp
 import warnings
 import argparse
-
+from scipy import optimize
+from gurobi_optimods.sharpe_ratio import max_sharpe_ratio
 """
 Project Setup
 """
@@ -42,6 +43,7 @@ Bdf = portfolio_data = data.pivot_table(
     index="Date", columns="Symbol", values="Adj Close"
 )
 df = Bdf.loc["2019-01-01":"2024-04-01"]
+df_returns = df.pct_change().fillna(0)
 
 """
 Strategy Creation
@@ -55,7 +57,7 @@ class MyPortfolio:
     NOTE: You can modify the initialization function
     """
 
-    def __init__(self, price, exclude, lookback=50, gamma=0):
+    def __init__(self, price, exclude, lookback=100, gamma=1000):
         self.price = price
         self.returns = price.pct_change().fillna(0)
         self.exclude = exclude
@@ -74,6 +76,29 @@ class MyPortfolio:
         """
         TODO: Complete Task 4 Below
         """
+        '''Tangency portfolio'''
+        # for i in range(self.lookback + 1, len(df)):
+        #     # print(i/len(df))
+        #     R_n = df_returns.copy()[assets].iloc[i - self.lookback : i]
+        #     self.portfolio_weights.loc[df.index[i], assets] = self.tangency_portfolio(
+        #         R_n, self.gamma
+        #     )
+
+        # self.portfolio_weights.loc[df.index[len(df) - 1], assets] = self.mv_opt(
+        #     df_returns.copy()[assets], self.gamma
+        # )
+
+        '''Max Sharpe Ratio (simplified)'''
+        w = self.mv_opt(self.returns.copy()[assets], self.gamma)
+        for i in range(len(self.price)):
+            self.portfolio_weights.loc[self.portfolio_weights.index[i], assets] = w
+
+        '''Max Sharpe Ratio (full)'''
+        # for i in range(self.lookback + 1, len(df)):
+        #     R_n = self.returns.copy()[assets].iloc[i - self.lookback : i]
+        #     self.portfolio_weights.loc[self.portfolio_weights.index[i], assets] = self.mv_opt(
+        #         R_n, self.gamma
+        #     )
 
         """
         TODO: Complete Task 4 Above
@@ -81,6 +106,82 @@ class MyPortfolio:
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
+
+    def tangency_portfolio(self, R_n, gamma):
+        mu = R_n.mean().values
+        Sigma = R_n.cov().values
+        n = len(R_n.columns)
+
+        Sigma_inv = np.linalg.inv(Sigma)
+        w = np.matmul(Sigma_inv, mu) / np.matmul(np.ones(n), np.matmul(Sigma_inv, mu))
+
+        return w
+
+
+    def mv_opt(self, R_n, gamma):
+        mu = R_n.mean().values
+        Sigma = R_n.cov().values
+        n = len(R_n.columns)
+
+        with gp.Env(empty=True) as env:
+            env.setParam("OutputFlag", 0)
+            env.setParam("DualReductions", 0)
+            env.setParam('TimeLimit', 10)
+            env.start()
+            with gp.Model(env=env, name="portfolio") as model:
+                # Sample Code: Initialize Decision w and the Objective
+                # NOTE: You can modify the following code
+                '''
+                max sharpe ratio
+                '''
+                w = model.addMVar(n, name='w', lb=-0.5, ub=1)
+                den = model.addMVar(1, name='den', lb=0, ub=10)
+                den_recip = model.addMVar(1, name='den_recip')
+                nom = model.addMVar(1, name='nom', lb=-10, ub=10)
+
+                model.addConstr(w.sum() == 1)
+                model.addConstr(w @ Sigma @ w == den ** 2)
+                model.addConstr(den_recip * den == 1)
+                model.addConstr(nom == mu @ w)
+
+                model.setObjective(nom * den_recip, gp.GRB.MAXIMIZE)
+
+                model.optimize()
+
+                # Check if the status is INF_OR_UNBD (code 4)
+                if model.status == gp.GRB.INF_OR_UNBD:
+                    print(
+                        "Model status is INF_OR_UNBD. Reoptimizing with DualReductions set to 0."
+                    )
+                elif model.status == gp.GRB.INFEASIBLE:
+                    # Handle infeasible model
+                    print("Model is infeasible.")
+                    return [0] * n
+                    
+                elif model.status == gp.GRB.INF_OR_UNBD:
+                    # Handle infeasible or unbounded model
+                    print("Model is infeasible or unbounded.")
+
+                if model.status == gp.GRB.OPTIMAL or model.status == gp.GRB.SUBOPTIMAL or model.status == gp.GRB.TIME_LIMIT:
+                    # Extract the solution
+                    sol = []
+                    for i in range(n):
+                        var = model.getVarByName(f"w[{i}]")
+                        # print(f"w {i} = {var.X}")
+                        sol.append(var.X)
+        return sol
+    
+    def report_metrics(self, price, strategy, show=False):
+        df_bl = pd.DataFrame()
+        returns = price.pct_change().fillna(0)
+        df_bl["SPY"] = returns["SPY"]
+        df_bl[f"MP"] = pd.to_numeric(strategy["Portfolio"], errors="coerce")
+
+        qs.reports.metrics(df_bl, mode="full", display=show)
+
+        sharpe_ratio = qs.stats.sharpe(df_bl)
+
+        return sharpe_ratio
 
     def calculate_portfolio_returns(self):
         # Ensure weights are calculated

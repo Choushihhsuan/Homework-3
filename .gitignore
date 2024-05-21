@@ -1,1 +1,4 @@
 venv
+data.csv
+fetch_data.py
+test.py
